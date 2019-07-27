@@ -116,11 +116,13 @@ func (mp *master) checkBinary() error {
 	mp.binHash = hash.Sum(nil)
 	f.Close()
 	//test bin<->tmpbin moves
-	if err := move(tmpBinPath, mp.binPath); err != nil {
-		return fmt.Errorf("cannot move binary (%s)", err)
-	}
-	if err := move(mp.binPath, tmpBinPath); err != nil {
-		return fmt.Errorf("cannot move binary back (%s)", err)
+	if mp.Config.Fetcher != nil {
+		if err := move(tmpBinPath, mp.binPath); err != nil {
+			return fmt.Errorf("cannot move binary (%s)", err)
+		}
+		if err := move(mp.binPath, tmpBinPath); err != nil {
+			return fmt.Errorf("cannot move binary back (%s)", err)
+		}
 	}
 	return nil
 }
@@ -142,7 +144,7 @@ func (mp *master) setupSignalling() {
 func (mp *master) handleSignal(s os.Signal) {
 	if s == mp.RestartSignal {
 		//user initiated manual restart
-		mp.triggerRestart()
+		go mp.triggerRestart()
 	} else if s.String() == "child exited" {
 		// will occur on every restart, ignore it
 	} else
@@ -170,9 +172,11 @@ func (mp *master) handleSignal(s os.Signal) {
 }
 
 func (mp *master) sendSignal(s os.Signal) {
-	if err := mp.slaveCmd.Process.Signal(s); err != nil {
-		mp.debugf("signal failed (%s), assuming slave process died unexpectedly", err)
-		os.Exit(1)
+	if mp.slaveCmd != nil && mp.slaveCmd.Process != nil {
+		if err := mp.slaveCmd.Process.Signal(s); err != nil {
+			mp.debugf("signal failed (%s), assuming slave process died unexpectedly", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -293,7 +297,8 @@ func (mp *master) fetch() {
 	//overseer sanity check, dont replace our good binary with a non-executable file
 	tokenIn := token()
 	cmd := exec.Command(tmpBinPath)
-	cmd.Env = []string{envBinCheck + "=" + tokenIn}
+	cmd.Env = append(os.Environ(), []string{envBinCheck + "=" + tokenIn}...)
+	cmd.Args = os.Args
 	returned := false
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -415,7 +420,7 @@ func (mp *master) fork() error {
 		}
 		mp.debugf("prog exited with %d", code)
 		//if a restarts are disabled or if it was an
-		//unexpected creash, proxy this exit straight
+		//unexpected crash, proxy this exit straight
 		//through to the main process
 		if mp.NoRestart || !mp.restarting {
 			os.Exit(code)
